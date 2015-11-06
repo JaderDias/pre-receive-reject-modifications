@@ -1,61 +1,37 @@
 NAME
-    pre-receive-reject-binaries - A configurable Git hook to intelligently
-    reject binary pushes
+    pre-receive-reject-modifications - A configurable Git hook to intelligently
+    reject pushes of modifications to existing files
 
 SYNOPSIS
-        pre-receive-reject-binaries --help
-        pre-receive-reject-binaries --man
+        pre-receive-reject-modifications --help
+        pre-receive-reject-modifications --man
 
         # To actually make this hook do anything wrap it in a shellscript
         # that does this
-        pre-receive-reject-binaries --dry-run=0
+        pre-receive-reject-modifications --dry-run=0
 
         # Do whatever we would have done but fail in cases where we'd
         # succeed, for testing purposes
-        pre-receive-reject-binaries --dry-run=0 --always-fail
+        pre-receive-reject-modifications --dry-run=0 --always-fail
 
         # By default we only emit NOTICE level output on STDERR, that can
         # be made a lot more verbose with DEBUG or TRACE. We can also pipe
         # DEBUG or TRACE output to a log command, see
-        # hook.pre-receive-reject-binaries.log-command.
-        pre-receive-reject-binaries --dry-run=0 --log-level=TRACE
+        # hook.pre-receive-reject-modifications.log-command.
+        pre-receive-reject-modifications --dry-run=0 --log-level=TRACE
 
 DESCRIPTION
     This is a Git hook meant to be set up as a "pre-receive" hook (see
-    githooks(5)) that'll reject the addition of binary data to a repository,
-    either all binary additions if they on a per-commit basis go above a
-    given size.
+    githooks(5)) that'll reject the modification of existing files in a
+    repository.
 
     The general strategy of this hook is that when we get a push for a given
-    "master" branch we'll do a "log --stat" of "$branch..$to" and find all
-    the commits that add binary data, and how much they add.
-
-    Each commit in the push is then given a quota of how much binary data is
-    allowed, if any commit goes above that quota the entire push is
-    rejected. Depending on the configuration (see below) the user is allowed
-    to force the push to go through by amending the commit message to
-    include some string saying they forced it through.
-
-    To entirely reject binary pushes you can set the size limit to 0 and
-    don't define an override message to allow users to push those changes
-    manually.
-
-    You can also allow some amount of binary data in the repository
-    per-commit, e.g. to allow committing small icons but not giant images.
-
-    Of course someone could be clever and commit a bunch of huge
-    Base64-encoded data that wouldn't be detected by Git as binary, or
-    manually split up huge binary data into multiple commits, each of whom
-    don't go above the configured limit.
-
-    This hook is not meant to stop a dedicated attacker from enlarging your
-    Git history, it's meant to stop someone who doesn't know better ("what
-    do you mean people have to download my binary data on every checkout,
-    forever?!") from accidentally messing up the history.
+    "master" branch we'll do a "log -p" of "$branch..$to" and find all
+    the commits that modify or delete existing files.
 
     We only care about updates to the "master" branch for two reasons, one
     is that if you're e.g. doing some temporary work and committing some
-    binaries to a custom branch temporarily that's fine as long as that
+    modifications to a custom branch temporarily that's fine as long as that
     branch doesn't make it to "master", and eventually gets deleted from
     $whatever.git.
 
@@ -82,7 +58,7 @@ INSTALLATION
     a hook/pre-receive with something like:
 
         #!/bin/sh
-        /path/to/where/you/cloned-pre-receive-reject-binaries/pre-receive-reject-binaries --dry-run=0
+        /path/to/where/you/cloned-pre-receive-reject-modifications/pre-receive-reject-modifications --dry-run=0
 
     See "CONFIGURATION" below for how to configure it. We shell out to "git
     config" so you can enable this configuration per-repository, or globally
@@ -92,72 +68,46 @@ CONFIGURATION
     Here's an example of what a typical configuration for this hook might
     look like:
 
-        [hook "pre-receive-reject-binaries"]
+        [hook "pre-receive-reject-modifications"]
             master-branch-name = master
-            max-per-commit-size-increase = 1024
-            commit-override-message = "YES I WANT TO FOREVER INCREASE THE SIZE OF core.git BY ADDING {BYTES} BYTES OF BINARY DATA TO IT!"
             support-contact = "git@lists.example.com or the 'support' Jabber channel"
-            log-command = /gitroot/contrib/hooks/pre-receive-reject-binaries/log-command
+            log-command = /gitroot/contrib/hooks/pre-receive-reject-modifications/log-command
             log-command-level = TRACE
-            blocked-push-command = /gitroot/contrib/hooks/pre-receive-reject-binaries/blocked-push-command
-            unblocked-push-command = /gitroot/contrib/hooks/pre-receive-reject-binaries/unblocked-push-command
+            blocked-push-command = /gitroot/contrib/hooks/pre-receive-reject-modifications/blocked-push-command
 
     For example commands for the "*-command" switches see the examples/
-    directory in the pre-receive-reject-binaries Git distribution for an
+    directory in the pre-receive-reject-modifications Git distribution for an
     example of what the author uses this hook for.
 
     Detailed documentation about each option below:
 
-  hook.pre-receive-reject-binaries.master-branch-name
-    The "master" branch name you want to not allow binary pushes to. Usually
+  hook.pre-receive-reject-modifications.master-branch-name
+    The "master" branch name you want to not allow modification pushes to. Usually
     "master", can also be "trunk" or whatever.
 
-  hook.pre-receive-reject-binaries.max-per-commit-size-increase
-    If a given commit adds files whose cumulative file size is above this we
-    reject it. In bytes.
-
-  hook.pre-receive-reject-binaries.commit-override-message
-    If there actually is a good reason to go above the configured limits
-    they can be overridden.
-
-    To do this the commit message of any offending commit needs to be
-    changed to include this string. Occurrences of "{BYTES}" in the will be
-    replaced by however many bytes are being added. E.g. this can be set to:
-
-        YES I WANT TO FOREVER INCREASE THE SIZE OF $whatever.git BY ADDING %BYTES% BYTES OF BINARY TO IT!
-
-    If that string is present in the commit message we'll ignore that commit
-    for the purposes of computing the size of the commit. To not allow any
-    overrides just don't set this.
-
-  hook.pre-receive-reject-binaries.support-contact
+  hook.pre-receive-reject-modifications.support-contact
     A string we'll use when we reject the push as the support contact, e.g.
     an E-Mail address or Jabber channel.
 
-  hook.pre-receive-reject-binaries.log-command
+  hook.pre-receive-reject-modifications.log-command
     An executable script that we'll pipe all our output into. Useful for
     e.g. spewing all output users see into a log.
 
-  hook.pre-receive-reject-binaries.log-command-level
+  hook.pre-receive-reject-modifications.log-command-level
     The log level we'll use for the output given to the
-    "hook.pre-receive-reject-binaries.log-command". Can be "NOTICE", "DEBUG"
+    "hook.pre-receive-reject-modifications.log-command". Can be "NOTICE", "DEBUG"
     or "TRACE". The "NOTICE" messages are the messages we show to users,
     anything above that is verbose output mainly intended to debug this
     script.
 
-  hook.pre-receive-reject-binaries.blocked-push-command
+  hook.pre-receive-reject-modifications.blocked-push-command
     A command we'll run whenever this hook blocks a push, it'll get all the
     output we emit piped into it. Useful for e.g. sending a mail whenever we
     have a blocked push.
 
-  hook.pre-receive-reject-binaries.unblocked-push-command
-    A command we'll run if we have a push that we would have rejected, but
-    was unblocked through via the facility described in
-    "hook.pre-receive-reject-binaries.commit-override-message". If that's
-    not enabled we won't be calling this.
-
-AUTHOR
+AUTHORS
     Ævar Arnfjörð Bjarmason <avar@cpan.org>
+    Jader Dias <jaderd@gmail.com>
 
 COPYRIGHT AND LICENSE
     This software is copyright (c) 2014 by Ævar Arnfjörð Bjarmason

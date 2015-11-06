@@ -1,0 +1,406 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use Getopt::Long qw(GetOptions);
+
+GetOptions(
+    'help|?'      => \my $help,
+    'man'         => \my $man,
+    'dry-run=i'   => \(my $dry_run = 1),
+    'log-level=s' => \(my $OUTPUT_LOG_LEVEL = 'NOTICE'),
+    'always-fail' => \my $always_fail,
+) or die "Error parsing options";
+
+if ($help or $man) {
+    require Pod::Usage;
+    Pod::Usage::pod2usage(-exitstatus => 0, -verbose => 1) if $help;
+    Pod::Usage::pod2usage(-exitstatus => 0, -verbose => 2) if $man;
+}
+
+my $NAME = 'pre-receive-reject-modifications';
+
+=encoding utf8
+
+=head1 NAME
+
+pre-receive-reject-modifications - A configurable Git hook to intelligently reject modification pushes
+
+=head1 SYNOPSIS
+
+    pre-receive-reject-modifications --help
+    pre-receive-reject-modifications --man
+
+    # To actually make this hook do anything wrap it in a shellscript
+    # that does this
+    pre-receive-reject-modifications --dry-run=0
+
+    # Do whatever we would have done but fail in cases where we'd
+    # succeed, for testing purposes
+    pre-receive-reject-modifications --dry-run=0 --always-fail
+
+    # By default we only emit NOTICE level output on STDERR, that can
+    # be made a lot more verbose with DEBUG or TRACE. We can also pipe
+    # DEBUG or TRACE output to a log command, see
+    # hook.pre-receive-reject-modifications.log-command.
+    pre-receive-reject-modifications --dry-run=0 --log-level=TRACE
+
+=head1 DESCRIPTION
+
+This is a Git hook meant to be set up as a "pre-receive" hook (see
+githooks(5)) that'll reject the modification of existing files in a
+repository.
+
+The general strategy of this hook is that when we get a push for a given
+"master" branch we'll do a "log -p" of "$branch..$to" and find all
+the commits that modify or delete existing files.
+
+We only care about updates to the "master" branch for two reasons, one
+is that if you're e.g. doing some temporary work and committing some
+modifications to a custom branch temporarily that's fine as long as that
+branch doesn't make it to "master", and eventually gets deleted from
+$whatever.git.
+
+The other is that if you we were to reject pushes to other branches,
+especially newly created ones we'd have to deal with the special case of
+deciding what to use as the merge-base for that branch. Do we use the
+"master" branch? do we validate the entire history? Easier to just not
+deal with it. Want the hook to do something smart about that? Patches
+welcome.
+
+Keep in mind though that this is deliberately written to be fast on
+humongous repositories, so anything that breaks that promise would have
+to at least be optional.
+
+We do handle the initial push to the "master" branch itself by just
+validating the entire history being pushed.
+
+=head1 INSTALLATION
+
+Our only dependencies are a working perl interpreter. We only depend
+on modules that have shipped with perl itself forever, so this hook
+should just work out of the box on any *nix-like OS that has perl
+installed.
+
+To enable it for a given bare repository you want to push to just
+create a F<hook/pre-receive> with something like:
+
+    #!/bin/sh
+    /path/to/where/you/cloned-pre-receive-reject-modifications/pre-receive-reject-modifications --dry-run=0
+
+See L</CONFIGURATION> below for how to configure it. We shell out to
+C<git config> so you can enable this configuration per-repository, or
+globally (via e.g. F</etc/gitconfig>) or any combination of the two.
+
+=head1 CONFIGURATION
+
+Here's an example of what a typical configuration for this hook might
+look like:
+
+    [hook "pre-receive-reject-modifications"]
+        master-branch-name = master
+        support-contact = "git@lists.example.com or the 'support' Jabber channel"
+        log-command = /gitroot/contrib/hooks/pre-receive-reject-modifications/log-command
+        log-command-level = TRACE
+        blocked-push-command = /gitroot/contrib/hooks/pre-receive-reject-modifications/blocked-push-command
+
+For example commands for the C<*-command> switches see the
+F<examples/> directory in the F<pre-receive-reject-modifications> Git
+distribution for an example of what the author uses this hook for.
+
+Detailed documentation about each option below:
+
+=head2 hook.pre-receive-reject-modifications.master-branch-name
+
+The C<master> branch name you want to not allow modification pushes
+to. Usually C<master>, can also be C<trunk> or whatever.
+
+=head2 hook.pre-receive-reject-modifications.support-contact
+
+A string we'll use when we reject the push as the support contact,
+e.g. an E-Mail address or Jabber channel.
+
+=head2 hook.pre-receive-reject-modifications.log-command
+
+An executable script that we'll pipe all our output into. Useful for
+e.g. spewing all output users see into a log.
+
+=head2 hook.pre-receive-reject-modifications.log-command-level
+
+The log level we'll use for the output given to the
+L</hook.pre-receive-reject-modifications.log-command>. Can be C<NOTICE>,
+C<DEBUG> or C<TRACE>. The C<NOTICE> messages are the messages we show
+to users, anything above that is verbose output mainly intended to
+debug this script.
+
+=head2 hook.pre-receive-reject-modifications.blocked-push-command
+
+A command we'll run whenever this hook blocks a push, it'll get all
+the output we emit piped into it. Useful for e.g. sending a mail
+whenever we have a blocked push.
+
+=head1 AUTHORS
+
+Ævar Arnfjörð Bjarmason <avar@cpan.org>
+Jader Dias <jaderd@gmail.com>
+
+=head1 COPYRIGHT AND LICENSE
+
+This software is copyright (c) 2014 by Ævar Arnfjörð Bjarmason <avar@cpan.org>
+
+This is free software; you can redistribute it and/or modify it under
+the same terms as the Perl 5 programming language system itself.
+
+=cut
+
+# Can't believe I'm implementing my own logging framework...
+my %LOGLEVELS;
+BEGIN {
+    %LOGLEVELS = (
+        NOTICE => 1,
+        DEBUG  => 2,
+        TRACE  => 3,
+    );
+}
+use constant \%LOGLEVELS;
+
+message(DEBUG, ("=" x 79));
+
+# Get our configuration from the Git repository
+my $config_master_branch_name;
+my $config_support_contact;
+my $config_log_command;
+my $config_log_command_level;
+my $config_blocked_push_command;
+{
+    my $config_variable;
+
+    $config_variable = 'hook.pre-receive-reject-modifications.master-branch-name';
+    chomp($config_master_branch_name = qx[git config $config_variable]);
+    error("PANIC: $0 has not had <$config_variable> configured for this repository. That configuration is mandatory, see the documentation for the hook") unless $config_master_branch_name;
+
+    chomp($config_support_contact = qx[git config hook.pre-receive-reject-modifications.support-contact]);
+    chomp($config_log_command = qx[git config hook.pre-receive-reject-modifications.log-command]);
+    chomp($config_log_command_level = qx[git config hook.pre-receive-reject-modifications.log-command-level]);
+    $config_log_command_level ||= 'NOTICE';
+    chomp($config_blocked_push_command = qx[git config hook.pre-receive-reject-modifications.blocked-push-command]);
+}
+
+# We'll include this state in any detailed error messages
+my (@updates, @updates_to_main_branch, $update);
+
+while (my $line = <STDIN>) {
+    chomp $line;
+    my ($from, $to, $raw_ref) = split / /, $line;
+    message(TRACE, "Parsed a line <$line> from STDIN as <$from> <$to> <$raw_ref>");
+    error("PANIC: We should get '<old-value> SP <new-value> SP <ref-name> LF' here. Got '$line' instead")
+        unless $from and $to and $raw_ref;
+
+    my ($ref_type, $ref_name)= $raw_ref =~ m[^refs/(heads|tags)/(.+)$]s
+        or error("PANIC: Unable to parse the ref name <$raw_ref>");
+
+    push @updates => {
+        from     => $from,
+        to       => $to,
+        raw_ref  => $raw_ref,
+        ref_type => $ref_type,
+        ref_name => $ref_name,
+    };
+}
+
+@updates_to_main_branch = grep { $_->{ref_name} eq $config_master_branch_name } @updates;
+# No updates to the branch we care about? Cool.
+_exit(0, 1) unless @updates_to_main_branch;
+
+# There's only one!
+$update = $updates_to_main_branch[0];
+
+# If you push to a new branch we'll just validate the entire history
+# of your push.
+my $null_ref = '0000000000000000000000000000000000000000';
+my $over_nine_thousand = '9001,9001';
+if ($update->{to} eq $null_ref) {
+    message(DEBUG, "You're deleting the <$config_master_branch_name> branch (pushing to <$null_ref>). Allright then, not our job to stop you");
+    _exit(0, 1);
+} elsif ($update->{from} eq $null_ref) {
+    message(DEBUG, "You are doing an initial push to <$config_master_branch_name> (pushing from <$null_ref>). Validating all the history");
+    chomp(my @log = qx[git log -p --pretty=format:%H $update->{to}]);
+    $update->{log} = \@log;
+    chomp(my @rev_list = qx[git rev-list $update->{to}]);
+    $update->{rev_list} = \@rev_list;
+} else {
+    message(DEBUG, "You are doing a push to <$config_master_branch_name> from <$update->{from}> to <$update->{to}>");
+    chomp(my @log = qx[git log -p --pretty=format:%H $update->{from}..$update->{to}]);
+    $update->{log} = \@log;
+    chomp(my @rev_list = qx[git rev-list $update->{from}..$update->{to}]);
+    $update->{rev_list} = \@rev_list;
+}
+@{$update->{rev_list_hash}}{@{$update->{rev_list}}} = ();
+
+# Parse out the log for the push we're getting. State machine galore.
+my $current_commit;
+my $seen_commits = 0;
+LINE: for my $line (@{$update->{log}}) {
+    if (!$current_commit) {
+        error("PANIC: The first line we get should be a commit hash, it's <$line>") unless exists $update->{rev_list_hash}->{$line};
+        $current_commit = $line;
+        $seen_commits++;
+        next LINE;
+    } elsif (exists $update->{rev_list_hash}->{$line}) {
+        $current_commit = $line;
+        $seen_commits++;
+        next LINE;
+    }
+
+    if(my ($original_hash) = $line =~ /^index ([0-9a-f]+)\.\./) {
+        push @{ $update->{parsed_modification_log}->{$current_commit} } => $original_hash;
+    }
+}
+error(" PANIC: We should have seen <" . @{$update->{rev_list}} . "> commits in the log we just parsed, but saw <$seen_commits> instead. Our parser is broken!")
+    unless @{$update->{rev_list}} == $seen_commits;
+
+unless (exists $update->{parsed_modification_log}) {
+    # We have no modification files in this push, just let the whole thing
+    # through, nothing more to do here.
+    message(DEBUG, "Parsed <" . @{$update->{rev_list}} . "> commits in this push and found no modification files. Letting it through");
+    _exit(0);
+}
+
+# Figure out which commits are naughty, and which are nice.
+for my $parsed_commit (keys %{$update->{parsed_modification_log}}) {
+    PARSED_FILE: for my $original_hash (@{$update->{parsed_modification_log}->{$parsed_commit}}) {
+        if($original_hash ne '0000000') {
+            $update->{bad_commits}->{$parsed_commit} = 1;
+        }
+    }
+}
+
+my $blocked_push;
+if (exists $update->{bad_commits}) {
+    message(NOTICE, ("=" x 79));
+    message(NOTICE, "You are trying to push <$update->{from}..$update->{to}>");
+    message(NOTICE, "to the <$config_master_branch_name> branch but have modified an existing file.");
+    message(NOTICE, ("=" x 79));
+
+    # We're looping through the rev-list so we'll emit the commits in
+    # the order that they're being pushed
+    my @bad_commit_messages;
+    COMMIT: for my $commit (reverse @{$update->{rev_list}}) {
+        next COMMIT unless my $added_n_bytes = $update->{bad_commits}->{$commit};
+        chomp(my $commit_message = qx[git show --no-abbrev-commit --stat $commit]);
+
+        my $exempted = '';
+        $commit_message =~ s/^/(" " x 4)/meg;
+        $commit_message =~ s/\bcommit (.{40})/commit $1 (added $added_n_bytes bytes$exempted)/;
+
+        push @bad_commit_messages => $commit_message;
+    }
+    message(NOTICE, join(
+        "\n" . ("=" x 79) . "\n",
+        @bad_commit_messages,
+    ));
+    message(NOTICE, ("=" x 79));
+    message(NOTICE, "");
+    message(NOTICE, "You've tried to push a modification to a file in this repository so we're");
+    message(NOTICE, " rejecting your push. This repository only allows you to add new files.");
+    message(NOTICE, "");
+    if ($config_support_contact) {
+        message(NOTICE, "If you have questions about this please contact $config_support_contact,");
+        message(NOTICE, "Make sure to paste the entire output of this push up to and including");
+        message(NOTICE, "the 'git push' command you used.");
+        message(NOTICE, "");
+    }
+    
+    message(NOTICE, ("=" x 79));
+    message(NOTICE, "This push is being rejected. You can't delete nor modify any already existing");
+    message(NOTICE, "file in this repository!");
+    message(NOTICE, ("=" x 79));
+    $blocked_push = 1;
+    _exit(1);
+}
+
+_exit(0);
+
+my @messages;
+
+sub _exit {
+    my ($code, $really) = @_;
+
+    my $pre_exit = sub {
+        # We're not checking exit values here because we don't want
+        # the push to fail due to some log hook failing
+        if ($config_log_command and @messages) {
+            if (open my $fh, "|-", $config_log_command) {
+                print $fh $_, "\n" for map { message_filter($_->[0], $config_log_command_level, $_->[1]) } @messages;
+                close $fh or warn "Couldn't close($config_log_command): <$!>";
+            } else {
+                warn "Couldn't open($config_log_command): <$!>";
+            }
+        }
+
+        if ($config_blocked_push_command and $blocked_push) {
+            if (open my $fh, "|-", $config_blocked_push_command) {
+                print $fh $_, "\n" for map { message_filter($_->[0], 'NOTICE', $_->[1]) } @messages;
+                close $fh or warn "Couldn't close($config_blocked_push_command): <$!>";
+            } else {
+                warn "Couldn't open($config_blocked_push_command): <$!>";
+            }
+        }
+
+        return;
+    };
+
+    if (!$really and !$code and $always_fail) {
+        message(NOTICE, "We would have exited successfully with <$code> but we're set to always fail for testing purposes");
+        $pre_exit->();
+        exit 1;
+    }
+
+    if ($code and $dry_run) {
+        message(NOTICE, "We would have rejected this push but we're set to --dry-run=1 for testing purposes");
+        $pre_exit->();
+        exit 0;
+    }
+
+
+    $pre_exit->();
+    exit $code;
+}
+
+sub message_filter {
+    my ($message_log_level, $log_level, $message) = @_;
+
+    # This is so very ugly
+    if ($message_log_level == NOTICE) {
+        return $message;
+    } elsif ($message_log_level == DEBUG) {
+        return $message if $LOGLEVELS{$log_level} == DEBUG or $LOGLEVELS{$log_level} == TRACE;
+    } elsif ($message_log_level == TRACE) {
+        return $message if $LOGLEVELS{$log_level} == TRACE;
+    }
+    return;
+}
+
+sub message {
+    my ($message_log_level, $what) = @_;
+
+    $what =~ s/^/$NAME: /mg;
+    $what =~ s/ $//mg;
+
+    if (my $filtered_what = message_filter($message_log_level, $OUTPUT_LOG_LEVEL, $what)) {
+        print STDERR $filtered_what, "\n";
+    }
+
+    push @messages => [$message_log_level => $what];
+
+    return;
+}
+
+sub error {
+    my ($what) = @_;
+
+    $what =~ s/^/$NAME: /mg;
+    $what =~ s/ $//mg;
+
+    message(NOTICE, "ERROR: $what");
+    _exit(1);
+}
