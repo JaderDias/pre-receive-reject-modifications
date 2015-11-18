@@ -217,19 +217,20 @@ $update = $updates_to_main_branch[0];
 # If you push to a new branch we'll just validate the entire history
 # of your push.
 my $null_ref = '0000000000000000000000000000000000000000';
+my $git_command = 'git log --name-status --pretty=format:%H';
 my $over_nine_thousand = '9001,9001';
 if ($update->{to} eq $null_ref) {
     message(DEBUG, "You're deleting the <$config_master_branch_name> branch (pushing to <$null_ref>). Allright then, not our job to stop you");
     _exit(0, 1);
 } elsif ($update->{from} eq $null_ref) {
     message(DEBUG, "You are doing an initial push to <$config_master_branch_name> (pushing from <$null_ref>). Validating all the history");
-    chomp(my @log = qx[git log -p --pretty=format:%H $update->{to}]);
+    chomp(my @log = qx[$git_command $update->{to}]);
     $update->{log} = \@log;
     chomp(my @rev_list = qx[git rev-list $update->{to}]);
     $update->{rev_list} = \@rev_list;
 } else {
     message(DEBUG, "You are doing a push to <$config_master_branch_name> from <$update->{from}> to <$update->{to}>");
-    chomp(my @log = qx[git log -p --pretty=format:%H $update->{from}..$update->{to}]);
+    chomp(my @log = qx[$git_command $update->{from}..$update->{to}]);
     $update->{log} = \@log;
     chomp(my @rev_list = qx[git rev-list $update->{from}..$update->{to}]);
     $update->{rev_list} = \@rev_list;
@@ -251,8 +252,8 @@ LINE: for my $line (@{$update->{log}}) {
         next LINE;
     }
 
-    if(my ($original_hash) = $line =~ /^index ([0-9a-f]+)\.\./) {
-        push @{ $update->{parsed_modification_log}->{$current_commit} } => $original_hash;
+    if(my ($operation) = $line =~ /^(A|M|D)\s/) {
+        push @{ $update->{parsed_modification_log}->{$current_commit} } => $operation;
     }
 }
 error(" PANIC: We should have seen <" . @{$update->{rev_list}} . "> commits in the log we just parsed, but saw <$seen_commits> instead. Our parser is broken!")
@@ -267,8 +268,8 @@ unless (exists $update->{parsed_modification_log}) {
 
 # Figure out which commits are naughty, and which are nice.
 for my $parsed_commit (keys %{$update->{parsed_modification_log}}) {
-    PARSED_FILE: for my $original_hash (@{$update->{parsed_modification_log}->{$parsed_commit}}) {
-        if($original_hash ne '0000000') {
+    PARSED_FILE: for my $operation (@{$update->{parsed_modification_log}->{$parsed_commit}}) {
+        if($operation ne 'A') {
             $update->{bad_commits}->{$parsed_commit} = 1;
         }
     }
@@ -286,7 +287,7 @@ if (exists $update->{bad_commits}) {
     my @bad_commit_messages;
     COMMIT: for my $commit (reverse @{$update->{rev_list}}) {
         next COMMIT unless my $added_n_bytes = $update->{bad_commits}->{$commit};
-        chomp(my $commit_message = qx[git show --no-abbrev-commit --stat $commit]);
+        chomp(my $commit_message = qx[git show --no-abbrev-commit --name-status $commit]);
 
         my $exempted = '';
         $commit_message =~ s/^/(" " x 4)/meg;
