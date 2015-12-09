@@ -51,8 +51,8 @@ githooks(5)) that'll reject the modification of existing files in a
 repository.
 
 The general strategy of this hook is that when we get a push for a given
-"master" branch we'll do a "log -p" of "$branch..$to" and find all
-the commits that modify or delete existing files.
+"master" branch we'll do a "log --name-status" of "$branch..$to" and find
+all the commits that modify or delete existing files.
 
 We only care about updates to the "master" branch for two reasons, one
 is that if you're e.g. doing some temporary work and committing some
