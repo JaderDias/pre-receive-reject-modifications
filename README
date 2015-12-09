@@ -29,6 +29,10 @@ DESCRIPTION
     "master" branch we'll do a "log --name-status" of "$branch..$to" and find
     all the commits that modify or delete existing files.
 
+    To entirely reject pushes with modifications to existing files you can
+    simply avoid to define an override message that could allow users to push
+    those changes manually.
+
     We only care about updates to the "master" branch for two reasons, one
     is that if you're e.g. doing some temporary work and committing some
     modifications to a custom branch temporarily that's fine as long as that
@@ -70,10 +74,12 @@ CONFIGURATION
 
         [hook "pre-receive-reject-modifications"]
             master-branch-name = master
+            commit-override-message = "YES I WANT TO MODIFY OR DELETE FILES IN core.git EVEN THOUGH THE OLD FILES MIGHT HAVE ALREADY BEEN DEPLOYED"
             support-contact = "git@lists.example.com or the 'support' Jabber channel"
             log-command = /gitroot/contrib/hooks/pre-receive-reject-modifications/log-command
             log-command-level = TRACE
             blocked-push-command = /gitroot/contrib/hooks/pre-receive-reject-modifications/blocked-push-command
+            unblocked-push-command = /gitroot/contrib/hooks/pre-receive-reject-modifications/unblocked-push-command
 
     For example commands for the "*-command" switches see the examples/
     directory in the pre-receive-reject-modifications Git distribution for an
@@ -84,6 +90,19 @@ CONFIGURATION
   hook.pre-receive-reject-modifications.master-branch-name
     The "master" branch name you want to not allow modification pushes to. Usually
     "master", can also be "trunk" or whatever.
+
+  hook.pre-receive-reject-modifications.commit-override-message
+    If there actually is a good reason to modify or delete an existing file, the
+    block can be overridden.
+
+    To do this the commit message of any offending commit needs to be
+    changed to include this string. E.g. this can be set to:
+
+        YES I WANT TO MODIFY OR DELETE FILES IN whatever.git EVEN THOUGH THE OLD FILES MIGHT HAVE ALREADY BEEN DEPLOYED
+
+    If that string is present in the commit message we'll ignore that commit for
+    the purposes blocking pushes. To not allow any overrides just don't set
+    this.
 
   hook.pre-receive-reject-modifications.support-contact
     A string we'll use when we reject the push as the support contact, e.g.
@@ -104,6 +123,12 @@ CONFIGURATION
     A command we'll run whenever this hook blocks a push, it'll get all the
     output we emit piped into it. Useful for e.g. sending a mail whenever we
     have a blocked push.
+
+  hook.pre-receive-reject-modifications.unblocked-push-command
+    A command we'll run if we have a push that we would have rejected, but was
+    unblocked through via the facility described in
+    "hook.pre-receive-reject-modifications.commit-override-message". If that's
+    not enabled we won't be calling this.
 
 AUTHORS
     Ævar Arnfjörð Bjarmason <avar@cpan.org>

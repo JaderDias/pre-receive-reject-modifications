@@ -23,7 +23,8 @@ my $NAME = 'pre-receive-reject-modifications';
 
 =head1 NAME
 
-pre-receive-reject-modifications - A configurable Git hook to intelligently reject modification pushes
+pre-receive-reject-modifications - A configurable Git hook to intelligently
+reject pushes of commits that modify or delete existing files
 
 =head1 SYNOPSIS
 
@@ -53,6 +54,10 @@ repository.
 The general strategy of this hook is that when we get a push for a given
 "master" branch we'll do a "log --name-status" of "$branch..$to" and find
 all the commits that modify or delete existing files.
+    
+To entirely reject pushes with modifications to existing files you can
+simply avoid to define an override message that could allow users to push
+those changes manually.
 
 We only care about updates to the "master" branch for two reasons, one
 is that if you're e.g. doing some temporary work and committing some
@@ -98,10 +103,12 @@ look like:
 
     [hook "pre-receive-reject-modifications"]
         master-branch-name = master
+        commit-override-message = "YES I WANT TO MODIFY OR DELETE FILES IN core.git EVEN THOUGH THE OLD FILES MIGHT HAVE ALREADY BEEN DEPLOYED
         support-contact = "git@lists.example.com or the 'support' Jabber channel"
         log-command = /gitroot/contrib/hooks/pre-receive-reject-modifications/log-command
         log-command-level = TRACE
         blocked-push-command = /gitroot/contrib/hooks/pre-receive-reject-modifications/blocked-push-command
+        unblocked-push-command = /gitroot/contrib/hooks/pre-receive-reject-modifications/unblocked-push-command
 
 For example commands for the C<*-command> switches see the
 F<examples/> directory in the F<pre-receive-reject-modifications> Git
@@ -113,6 +120,21 @@ Detailed documentation about each option below:
 
 The C<master> branch name you want to not allow modification pushes
 to. Usually C<master>, can also be C<trunk> or whatever.
+
+
+=head2 hook.pre-receive-reject-modifications.commit-override-message
+
+If there actually is a good reason to modify or delete an existing file, the
+block can be overridden.
+
+To do this the commit message of any offending commit needs to be
+changed to include this string. E.g. this can be set to:
+
+    YES I WANT TO MODIFY OR DELETE FILES IN whatever.git EVEN THOUGH THE OLD FILES MIGHT HAVE ALREADY BEEN DEPLOYED
+
+If that string is present in the commit message we'll ignore that commit for
+the purposes blocking pushes. To not allow any overrides just don't set
+this.
 
 =head2 hook.pre-receive-reject-modifications.support-contact
 
@@ -137,6 +159,13 @@ debug this script.
 A command we'll run whenever this hook blocks a push, it'll get all
 the output we emit piped into it. Useful for e.g. sending a mail
 whenever we have a blocked push.
+
+=head2 hook.pre-receive-reject-modifications.unblocked-push-command
+
+A command we'll run if we have a push that we would have rejected, but was
+unblocked through via the facility described in
+"hook.pre-receive-reject-modifications.commit-override-message". If that's
+not enabled we won't be calling this.
 
 =head1 AUTHORS
 
@@ -167,10 +196,12 @@ message(DEBUG, ("=" x 79));
 
 # Get our configuration from the Git repository
 my $config_master_branch_name;
+my $config_commit_override_message;
 my $config_support_contact;
 my $config_log_command;
 my $config_log_command_level;
 my $config_blocked_push_command;
+my $config_unblocked_push_command;
 {
     my $config_variable;
 
@@ -178,11 +209,13 @@ my $config_blocked_push_command;
     chomp($config_master_branch_name = qx[git config $config_variable]);
     error("PANIC: $0 has not had <$config_variable> configured for this repository. That configuration is mandatory, see the documentation for the hook") unless $config_master_branch_name;
 
+    chomp($config_commit_override_message = qx[git config hook.pre-receive-reject-modifications.commit-override-message]);
     chomp($config_support_contact = qx[git config hook.pre-receive-reject-modifications.support-contact]);
     chomp($config_log_command = qx[git config hook.pre-receive-reject-modifications.log-command]);
     chomp($config_log_command_level = qx[git config hook.pre-receive-reject-modifications.log-command-level]);
     $config_log_command_level ||= 'NOTICE';
     chomp($config_blocked_push_command = qx[git config hook.pre-receive-reject-modifications.blocked-push-command]);
+    chomp($config_unblocked_push_command = qx[git config hook.pre-receive-reject-modifications.unblocked-push-command]);
 }
 
 # We'll include this state in any detailed error messages
@@ -270,53 +303,108 @@ unless (exists $update->{parsed_modification_log}) {
 for my $parsed_commit (keys %{$update->{parsed_modification_log}}) {
     PARSED_FILE: for my $operation (@{$update->{parsed_modification_log}->{$parsed_commit}}) {
         if($operation ne 'A') {
-            $update->{bad_commits}->{$parsed_commit} = 1;
+            $update->{bad_commits}->{$parsed_commit}++;
         }
     }
 }
 
 my $blocked_push;
+my $unblocked_push;
 if (exists $update->{bad_commits}) {
     message(NOTICE, ("=" x 79));
     message(NOTICE, "You are trying to push <$update->{from}..$update->{to}>");
     message(NOTICE, "to the <$config_master_branch_name> branch but have modified an existing file.");
-    message(NOTICE, ("=" x 79));
+    message(NOTICE, "");
+    message(NOTICE, "These are the commits that we found with file modifications:");
+    message(NOTICE, "");
 
     # We're looping through the rev-list so we'll emit the commits in
     # the order that they're being pushed
     my @bad_commit_messages;
     COMMIT: for my $commit (reverse @{$update->{rev_list}}) {
-        next COMMIT unless my $added_n_bytes = $update->{bad_commits}->{$commit};
+        next COMMIT unless $update->{bad_commits}->{$commit};
         chomp(my $commit_message = qx[git show --no-abbrev-commit --name-status $commit]);
 
         my $exempted = '';
+        if ($config_commit_override_message) {
+            my $cp = $config_commit_override_message;
+            if ($commit_message =~ /\Q$cp\E/) {
+                $update->{unblocked_commits}->{$commit} = undef;
+                $exempted = ', BUT exempted!';
+            }
+        }
         $commit_message =~ s/^/(" " x 4)/meg;
-        $commit_message =~ s/\bcommit (.{40})/commit $1 (added $added_n_bytes bytes$exempted)/;
+        $commit_message =~ s/\bcommit (.{40})/commit $1$exempted/;
 
         push @bad_commit_messages => $commit_message;
     }
     message(NOTICE, join(
-        "\n" . ("=" x 79) . "\n",
+        "\n\n",
         @bad_commit_messages,
     ));
+    message(NOTICE, "");
     message(NOTICE, ("=" x 79));
-    message(NOTICE, "");
-    message(NOTICE, "You've tried to push a modification to a file in this repository so we're");
-    message(NOTICE, " rejecting your push. This repository only allows you to add new files.");
-    message(NOTICE, "");
-    if ($config_support_contact) {
-        message(NOTICE, "If you have questions about this please contact $config_support_contact,");
-        message(NOTICE, "Make sure to paste the entire output of this push up to and including");
-        message(NOTICE, "the 'git push' command you used.");
+
+    my $rejected = 1;
+    if (exists $update->{unblocked_commits}) {
+        if (keys %{$update->{unblocked_commits}} < keys %{$update->{bad_commits}}) {
+            message(NOTICE, "You've unblocked some commits to get past the filters for file modification");
+            message(NOTICE, "but you still have bad commits. These are the commits you're unblocking:");
+            message(NOTICE, "");
+            COMMIT: for my $commit (reverse @{$update->{rev_list}}) {
+                message(NOTICE, "* $commit modifies $update->{bad_commits}->{$commit} file(s)") if exists $update->{unblocked_commits}->{$commit};
+            }
+            message(NOTICE, "");
+            message(NOTICE, "And these are the commits that still violate the policies of this repository:");
+            message(NOTICE, "");
+            COMMIT: for my $commit (reverse @{$update->{rev_list}}) {
+                message(NOTICE, "* $commit modifies $update->{bad_commits}->{$commit} file(s)")
+                    if exists $update->{bad_commits}->{$commit} and not exists $update->{unblocked_commits}->{$commit};
+            }
+            message(NOTICE, "");
+        } else {
+            message(NOTICE, "You've decided to unblock all of the commits we detected as bad through:");
+            message(NOTICE, "");
+            COMMIT: for my $commit (reverse @{$update->{rev_list}}) {
+                message(NOTICE, "* $commit modifies $update->{bad_commits}->{$commit} file(s)") if exists $update->{unblocked_commits}->{$commit};
+            }
+            message(NOTICE, "");
+            message(NOTICE, "This push will be reported");
+            $unblocked_push = 1;
+            $rejected = 0;
+        }
+    } else {
+        message(NOTICE, "You've tried to push a modification to one or more files in this repository so");
+        message(NOTICE, "we're rejecting your push. This repository only allows you to add new files.");
         message(NOTICE, "");
+
+        if ($config_support_contact) {
+            message(NOTICE, "If you have questions about this please contact $config_support_contact,");
+            message(NOTICE, "Make sure to paste the entire output of this push up to and including");
+            message(NOTICE, "the 'git push' command you used.");
+            message(NOTICE, "");
+        }
+        if ($config_commit_override_message) {
+            message(NOTICE, "If for some reason you think this modification is important enough affect this repository");
+            message(NOTICE, "you can force your push to be accepted by changing the commit message of offending");
+            message(NOTICE, "commits to include this literal string, without quotation marks:");
+            message(NOTICE, "");
+            message(NOTICE, "    '$config_commit_override_message'");
+            message(NOTICE, "");
+            message(NOTICE, "If you want to do that or remove the offending commits from being pushed but don't know");
+            message(NOTICE, "how, read the 'INTERACTIVE MODE' section of 'git help rebase'.");
+            message(NOTICE, "");
+        }
     }
-    
+
     message(NOTICE, ("=" x 79));
-    message(NOTICE, "This push is being rejected. You can't delete nor modify any already existing");
-    message(NOTICE, "file in this repository!");
-    message(NOTICE, ("=" x 79));
-    $blocked_push = 1;
-    _exit(1);
+    if($rejected) {
+        message(NOTICE, "This push is being rejected. You shouldn't delete nor modify any file in this");
+        message(NOTICE, "repository!");
+        message(NOTICE, ("=" x 79));
+        $blocked_push = 1;
+        _exit(1);
+    }
 }
 
 _exit(0);

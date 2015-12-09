@@ -1,0 +1,35 @@
+#!/usr/bin/perl
+use v5.14.2;
+use strict;
+use warnings;
+use Cwd qw(getcwd);
+use File::Basename qw(basename);
+
+my $repository = basename(getcwd());
+
+my ($loginname) = getpwuid($<);
+chomp(my @ldap = qx[ldapsearch -x uid=$loginname mail gecos|grep -e ^mail: -e ^gecos:]);
+my %ldap;
+for my $line (@ldap) {
+    my ($key, $value) = $line =~ /^([^:]+): (.+)$/s;
+    $ldap{$key} = $value;
+}
+
+open(my $mail, '|-', "/usr/sbin/sendmail -t") or warn "Couldn't launch /usr/sbin/sendmail";
+print $mail qq!Subject: [pre-receive-reject-modifications] Manually unblocked a binary push to $repository
+Reply-To: git.pushes\@lists.example.com
+Content-type: text/plain; charset=UTF-8
+To: git.pushes\@lists.example.com
+Cc: $ldap{mail}
+
+The pre-receive-reject-modifications has been overridden to force
+a push of a file modifications or removal in $repository.
+The push was initiated by $ldap{gecos}.
+
+Here's a copy of the output we emitted from the git hook,
+which explains why we previously blocked the push:
+!;
+
+print $mail $_ for <STDIN>;
+
+close($mail) or warn "Couldn't close /usr/sbin/sendmail";
