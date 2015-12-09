@@ -435,6 +435,15 @@ sub _exit {
             }
         }
 
+        if ($config_unblocked_push_command and $unblocked_push) {
+            if (open my $fh, "|-", $config_unblocked_push_command) {
+                print $fh $_, "\n" for map { message_filter($_->[0], 'NOTICE', $_->[1]) } @messages;
+                close $fh or warn "Couldn't close($config_unblocked_push_command): <$!>";
+            } else {
+                warn "Couldn't open($config_unblocked_push_command): <$!>";
+            }
+        }
+
         return;
     };
 
