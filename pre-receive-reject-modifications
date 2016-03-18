@@ -202,20 +202,18 @@ my $config_log_command;
 my $config_log_command_level;
 my $config_blocked_push_command;
 my $config_unblocked_push_command;
+my $config_blocked_operations;
+my $config_blocked_filenames;
 {
-    my $config_variable;
-
-    $config_variable = 'hook.pre-receive-reject-modifications.master-branch-name';
-    chomp($config_master_branch_name = qx[git config $config_variable]);
-    error("PANIC: $0 has not had <$config_variable> configured for this repository. That configuration is mandatory, see the documentation for the hook") unless $config_master_branch_name;
-
+    chomp($config_master_branch_name = qx[git config hook.pre-receive-reject-modifications.master-branch-name] // 'master');
     chomp($config_commit_override_message = qx[git config hook.pre-receive-reject-modifications.commit-override-message]);
     chomp($config_support_contact = qx[git config hook.pre-receive-reject-modifications.support-contact]);
     chomp($config_log_command = qx[git config hook.pre-receive-reject-modifications.log-command]);
-    chomp($config_log_command_level = qx[git config hook.pre-receive-reject-modifications.log-command-level]);
-    $config_log_command_level ||= 'NOTICE';
+    chomp($config_log_command_level = qx[git config hook.pre-receive-reject-modifications.log-command-level] // 'NOTICE');
     chomp($config_blocked_push_command = qx[git config hook.pre-receive-reject-modifications.blocked-push-command]);
     chomp($config_unblocked_push_command = qx[git config hook.pre-receive-reject-modifications.unblocked-push-command]);
+    chomp($config_blocked_operations = qx[git config hook.pre-receive-reject-modifications.blocked-operations] // 'D|M');
+    chomp($config_blocked_filenames = qx[git config hook.pre-receive-reject-modifications.blocked-filenames] // '');
 }
 
 # We'll include this state in any detailed error messages
@@ -285,8 +283,12 @@ LINE: for my $line (@{$update->{log}}) {
         next LINE;
     }
 
-    if(my ($operation) = $line =~ /^(A|M|D)\s/) {
-        push @{ $update->{parsed_modification_log}->{$current_commit} } => $operation;
+    my ($operation, $filename) = $line =~ /^(A|M|D)\s+([^\s].*)$/;
+    if ($operation) {
+        push @{ $update->{parsed_modification_log}->{$current_commit} } => {
+            operation => $operation,
+            filename => $filename,
+        };
     }
 }
 error(" PANIC: We should have seen <" . @{$update->{rev_list}} . "> commits in the log we just parsed, but saw <$seen_commits> instead. Our parser is broken!")
@@ -301,8 +303,9 @@ unless (exists $update->{parsed_modification_log}) {
 
 # Figure out which commits are naughty, and which are nice.
 for my $parsed_commit (keys %{$update->{parsed_modification_log}}) {
-    PARSED_FILE: for my $operation (@{$update->{parsed_modification_log}->{$parsed_commit}}) {
-        if($operation ne 'A') {
+    PARSED_FILE: for my $entry (@{$update->{parsed_modification_log}->{$parsed_commit}}) {
+        if($entry->{operation} =~ /$config_blocked_operations/
+            && $entry->{filename} =~ /$config_blocked_filenames/) {
             $update->{bad_commits}->{$parsed_commit}++;
         }
     }
