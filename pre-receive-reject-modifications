@@ -285,7 +285,7 @@ LINE: for my $line (@{$update->{log}}) {
         next LINE;
     }
 
-    if(my ($operation) = $line =~ /^(A|M|D)\s/) {
+    if(my ($operation) = $line =~ /^([ACDMR])[ 0-9]/) {
         push @{ $update->{parsed_modification_log}->{$current_commit} } => $operation;
     }
 }
@@ -302,7 +302,8 @@ unless (exists $update->{parsed_modification_log}) {
 # Figure out which commits are naughty, and which are nice.
 for my $parsed_commit (keys %{$update->{parsed_modification_log}}) {
     PARSED_FILE: for my $operation (@{$update->{parsed_modification_log}->{$parsed_commit}}) {
-        if($operation ne 'A') {
+        # if it's not a copy nor an addition
+        if ($operation ne 'A' && $operation ne 'C') {
             $update->{bad_commits}->{$parsed_commit}++;
         }
     }
