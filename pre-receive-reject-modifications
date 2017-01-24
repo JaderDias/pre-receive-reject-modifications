@@ -285,7 +285,7 @@ LINE: for my $line (@{$update->{log}}) {
         next LINE;
     }
 
-    if(my ($operation) = $line =~ /^([ACDMR])[ 0-9]/) {
+    if(my ($operation) = $line =~ /^([ACDMR])[ \t0-9]/) {
         push @{ $update->{parsed_modification_log}->{$current_commit} } => $operation;
     }
 }
